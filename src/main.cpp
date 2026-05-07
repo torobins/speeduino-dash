@@ -11,11 +11,7 @@ const char* WIFI_PASS = "foxglove2017";
 #define SPEEDY_RX     27   // A2 pad on QT Py ESP32 Pico — receives from Speeduino
 #define SPEEDY_TX     32   // unused TX pad
 
-// Secondary serial 'r' command protocol
-#define SPEEDY_CANID    0x00
-#define SPEEDY_RCMD     0x30   // read command type
-
-// Realtime data offsets (from Speeduino wiki / SpeedData.cpp)
+// Realtime data offsets (from Speeduino wiki)
 #define OFF_MAP         4    // 2 bytes, MAP kPa
 #define OFF_CLT         7    // 1 byte, coolant temp (raw + 40 = °C)
 #define OFF_BATT        9    // 1 byte, volts * 10
@@ -38,51 +34,7 @@ uint16_t g_map    = 0;
 uint8_t  g_tps    = 0;
 uint8_t  g_batt10 = 0;   // volts * 10
 
-// Request a value from Speeduino secondary serial using 'r' command
-// Returns number of data bytes received (0 on failure), fills resp[]
-int speeduinoRequest(uint16_t offset, uint16_t len, uint8_t* resp) {
-    uint8_t req[7] = {
-        0x72,                          // 'r' command
-        SPEEDY_CANID,                  // CAN ID
-        SPEEDY_RCMD,                   // command type 0x30
-        (uint8_t)(offset & 0xFF),      // offset LSB
-        (uint8_t)(offset >> 8),        // offset MSB
-        (uint8_t)(len & 0xFF),         // length LSB
-        (uint8_t)(len >> 8)            // length MSB
-    };
-
-    // Drain any leftover bytes
-    while (SPEEDY_SERIAL.available()) SPEEDY_SERIAL.read();
-
-    SPEEDY_SERIAL.write(req, 7);
-
-    // Wait for response: 'r' confirmation + type byte + data bytes
-    int expected = 2 + len;
-    uint8_t buf[8];
-    uint32_t start = millis();
-    int idx = 0;
-    while (idx < expected) {
-        if (millis() - start > 100) {
-            Serial.printf("[REQ ] offset=%d len=%d TIMEOUT got %d/%d bytes\n", offset, len, idx, expected);
-            if (idx > 0) {
-                Serial.print("       raw: ");
-                for (int i = 0; i < idx; i++) Serial.printf("%02X ", buf[i]);
-                Serial.println();
-            }
-            return 0;
-        }
-        if (SPEEDY_SERIAL.available()) buf[idx++] = SPEEDY_SERIAL.read();
-    }
-
-    if (buf[0] != 0x72) {
-        Serial.printf("[REQ ] offset=%d — bad confirm byte: 0x%02X (expected 0x72)\n", offset, buf[0]);
-        return 0;
-    }
-
-    // Copy data bytes (skip confirmation + type)
-    for (int i = 0; i < (int)len; i++) resp[i] = buf[2 + i];
-    return len;
-}
+#define A_CMD_RESPONSE 76  // 1 confirm byte + 75 data bytes
 
 static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html>
@@ -242,39 +194,37 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 )rawhtml";
 
 bool pollSpeeduino() {
-    uint8_t resp[2];
-    int ok = 0;
+    while (SPEEDY_SERIAL.available()) SPEEDY_SERIAL.read();
 
-    // RPM — 2 bytes at offset 14
-    if (speeduinoRequest(OFF_RPM, 2, resp)) {
-        g_rpm = (resp[1] << 8) | resp[0];  // little-endian
-        ok++;
-    }
-    // MAP — 2 bytes at offset 4
-    if (speeduinoRequest(OFF_MAP, 2, resp)) {
-        g_map = (resp[1] << 8) | resp[0];
-        ok++;
-    }
-    // Battery — 1 byte at offset 9
-    if (speeduinoRequest(OFF_BATT, 1, resp)) {
-        g_batt10 = resp[0];
-        ok++;
-    }
-    // TPS — 1 byte at offset 24
-    if (speeduinoRequest(OFF_TPS, 1, resp)) {
-        g_tps = resp[0];
-        ok++;
-    }
-    // Advance — 1 byte at offset 23
-    if (speeduinoRequest(OFF_ADVANCE, 1, resp)) {
-        g_advance = (int8_t)resp[0];
-        ok++;
+    SPEEDY_SERIAL.write('A');
+
+    uint8_t buf[A_CMD_RESPONSE];
+    uint32_t start = millis();
+    int idx = 0;
+    while (idx < A_CMD_RESPONSE) {
+        if (millis() - start > 200) {
+            Serial.printf("[POLL ] TIMEOUT got %d/%d bytes\n", idx, A_CMD_RESPONSE);
+            return false;
+        }
+        if (SPEEDY_SERIAL.available()) buf[idx++] = SPEEDY_SERIAL.read();
     }
 
-    Serial.printf("[POLL ] %d/5 OK — RPM=%d MAP=%d BATT=%d(%.1fV) TPS=%d ADV=%d\n",
-        ok, g_rpm, g_map, g_batt10, g_batt10 / 10.0, g_tps, g_advance);
+    if (buf[0] != 0x41) {
+        Serial.printf("[POLL ] bad confirm byte: 0x%02X (expected 0x41)\n", buf[0]);
+        return false;
+    }
 
-    return ok > 0;
+    uint8_t* d = buf + 1;  // data starts after confirm byte
+    g_map     = d[OFF_MAP] | (d[OFF_MAP + 1] << 8);
+    g_batt10  = d[OFF_BATT];
+    g_rpm     = d[OFF_RPM] | (d[OFF_RPM + 1] << 8);
+    g_advance = (int8_t)d[OFF_ADVANCE];
+    g_tps     = d[OFF_TPS];
+
+    Serial.printf("[POLL ] OK — RPM=%d MAP=%d BATT=%d(%.1fV) TPS=%d ADV=%d\n",
+        g_rpm, g_map, g_batt10, g_batt10 / 10.0, g_tps, g_advance);
+
+    return true;
 }
 
 void broadcastData() {
