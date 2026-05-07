@@ -8,8 +8,8 @@ const char* WIFI_PASS = "foxglove2017";
 
 #define SPEEDY_SERIAL Serial2
 #define SPEEDY_BAUD   115200
-#define SPEEDY_RX     27   // A2 pad — receives from Mega
-#define SPEEDY_TX     32   // TX pad (GPIO26 not available on QT Py)
+#define SPEEDY_RX     27   // A2 pad on QT Py ESP32 Pico — receives from Speeduino
+#define SPEEDY_TX     32   // unused TX pad
 
 #define MS_CMD_REALTIME  0x41
 
