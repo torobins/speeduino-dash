@@ -11,21 +11,19 @@ const char* WIFI_PASS = "foxglove2017";
 #define SPEEDY_RX     27   // A2 pad on QT Py ESP32 Pico — receives from Speeduino
 #define SPEEDY_TX     32   // unused TX pad
 
-#define MS_CMD_REALTIME  0x41
+// Secondary serial 'r' command protocol
+#define SPEEDY_CANID    0x00
+#define SPEEDY_RCMD     0x30   // read command type
 
-// Speeduino realtime packet offsets — verify against speeduino/comms.cpp sendValues()
-#define OFFSET_MAP_HI   4    // MAP kPa uint16 big-endian
-#define OFFSET_MAP_LO   5
-#define OFFSET_IAT      6    // intake air temp, subtract 40 for °C
-#define OFFSET_CLT      7    // coolant temp, subtract 40 for °C
-#define OFFSET_BATT     9    // battery * 10 (e.g. 142 = 14.2V)
-#define OFFSET_RPM_HI   13
-#define OFFSET_RPM_LO   14
-#define OFFSET_TPS      15   // throttle position 0–100%
-#define OFFSET_ADVANCE  23   // signed degrees
+// Realtime data offsets (from Speeduino wiki / SpeedData.cpp)
+#define OFF_MAP         4    // 2 bytes, MAP kPa
+#define OFF_CLT         7    // 1 byte, coolant temp (raw + 40 = °C)
+#define OFF_BATT        9    // 1 byte, volts * 10
+#define OFF_RPM        14    // 2 bytes, RPM
+#define OFF_TPS        24    // 1 byte, throttle %
+#define OFF_ADVANCE    23    // 1 byte, timing advance
 
-#define PACKET_LEN      125
-#define POLL_INTERVAL_MS 100
+#define POLL_INTERVAL_MS 150
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -36,7 +34,51 @@ uint16_t g_map    = 0;
 uint8_t  g_tps    = 0;
 uint8_t  g_batt10 = 0;   // volts * 10
 
-uint8_t pkt[PACKET_LEN];
+// Request a value from Speeduino secondary serial using 'r' command
+// Returns number of data bytes received (0 on failure), fills resp[]
+int speeduinoRequest(uint16_t offset, uint16_t len, uint8_t* resp) {
+    uint8_t req[7] = {
+        0x72,                          // 'r' command
+        SPEEDY_CANID,                  // CAN ID
+        SPEEDY_RCMD,                   // command type 0x30
+        (uint8_t)(offset & 0xFF),      // offset LSB
+        (uint8_t)(offset >> 8),        // offset MSB
+        (uint8_t)(len & 0xFF),         // length LSB
+        (uint8_t)(len >> 8)            // length MSB
+    };
+
+    // Drain any leftover bytes
+    while (SPEEDY_SERIAL.available()) SPEEDY_SERIAL.read();
+
+    SPEEDY_SERIAL.write(req, 7);
+
+    // Wait for response: 'r' confirmation + type byte + data bytes
+    int expected = 2 + len;
+    uint8_t buf[8];
+    uint32_t start = millis();
+    int idx = 0;
+    while (idx < expected) {
+        if (millis() - start > 100) {
+            Serial.printf("[REQ ] offset=%d len=%d TIMEOUT got %d/%d bytes\n", offset, len, idx, expected);
+            if (idx > 0) {
+                Serial.print("       raw: ");
+                for (int i = 0; i < idx; i++) Serial.printf("%02X ", buf[i]);
+                Serial.println();
+            }
+            return 0;
+        }
+        if (SPEEDY_SERIAL.available()) buf[idx++] = SPEEDY_SERIAL.read();
+    }
+
+    if (buf[0] != 0x72) {
+        Serial.printf("[REQ ] offset=%d — bad confirm byte: 0x%02X (expected 0x72)\n", offset, buf[0]);
+        return 0;
+    }
+
+    // Copy data bytes (skip confirmation + type)
+    for (int i = 0; i < (int)len; i++) resp[i] = buf[2 + i];
+    return len;
+}
 
 static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html>
@@ -195,23 +237,40 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 </html>
 )rawhtml";
 
-bool readSpeeduinoPacket() {
-    SPEEDY_SERIAL.write(MS_CMD_REALTIME);
-    uint32_t start = millis();
-    int idx = 0;
-    while (idx < PACKET_LEN) {
-        if (millis() - start > 200) return false;
-        if (SPEEDY_SERIAL.available()) pkt[idx++] = SPEEDY_SERIAL.read();
-    }
-    return true;
-}
+bool pollSpeeduino() {
+    uint8_t resp[2];
+    int ok = 0;
 
-void parsePacket() {
-    g_rpm     = ((int16_t)pkt[OFFSET_RPM_HI] << 8) | pkt[OFFSET_RPM_LO];
-    g_advance = (int8_t)pkt[OFFSET_ADVANCE];
-    g_map     = ((uint16_t)pkt[OFFSET_MAP_HI] << 8) | pkt[OFFSET_MAP_LO];
-    g_tps     = pkt[OFFSET_TPS];
-    g_batt10  = pkt[OFFSET_BATT];
+    // RPM — 2 bytes at offset 14
+    if (speeduinoRequest(OFF_RPM, 2, resp)) {
+        g_rpm = (resp[1] << 8) | resp[0];  // little-endian
+        ok++;
+    }
+    // MAP — 2 bytes at offset 4
+    if (speeduinoRequest(OFF_MAP, 2, resp)) {
+        g_map = (resp[1] << 8) | resp[0];
+        ok++;
+    }
+    // Battery — 1 byte at offset 9
+    if (speeduinoRequest(OFF_BATT, 1, resp)) {
+        g_batt10 = resp[0];
+        ok++;
+    }
+    // TPS — 1 byte at offset 24
+    if (speeduinoRequest(OFF_TPS, 1, resp)) {
+        g_tps = resp[0];
+        ok++;
+    }
+    // Advance — 1 byte at offset 23
+    if (speeduinoRequest(OFF_ADVANCE, 1, resp)) {
+        g_advance = (int8_t)resp[0];
+        ok++;
+    }
+
+    Serial.printf("[POLL ] %d/5 OK — RPM=%d MAP=%d BATT=%d(%.1fV) TPS=%d ADV=%d\n",
+        ok, g_rpm, g_map, g_batt10, g_batt10 / 10.0, g_tps, g_advance);
+
+    return ok > 0;
 }
 
 void broadcastData() {
@@ -246,6 +305,12 @@ void setup() {
         Serial.printf("\nWiFi failed. Status=%d\n", (int)WiFi.status());
     }
 
+    // Drain and log any stray bytes already in the RX buffer
+    int stray = 0;
+    while (SPEEDY_SERIAL.available()) { SPEEDY_SERIAL.read(); stray++; }
+    Serial.printf("Drained %d stray bytes from Speeduino serial\n", stray);
+    Serial.printf("Speeduino serial: RX=%d TX=%d @ %d baud\n", SPEEDY_RX, SPEEDY_TX, SPEEDY_BAUD);
+
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
     server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
@@ -259,7 +324,7 @@ void loop() {
     static uint32_t lastPoll = 0;
     if (millis() - lastPoll >= POLL_INTERVAL_MS) {
         lastPoll = millis();
-        if (readSpeeduinoPacket()) parsePacket();
+        pollSpeeduino();
         broadcastData();
         ws.cleanupClients();
     }
