@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speeduino Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-gauges@2.1.7/gauge.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 30px; font-size: 1.4rem; letter-spacing: 2px; color: #888; }
+    #gauges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 30px;
+      justify-content: center;
+    }
+    .gauge-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .gauge-label {
+      font-size: 0.85rem;
+      letter-spacing: 1px;
+      color: #aaa;
+      text-transform: uppercase;
+    }
+    .gauge-value {
+      font-size: 1.6rem;
+      font-weight: bold;
+      color: #fff;
+      min-width: 80px;
+      text-align: center;
+    }
+    #status {
+      margin-top: 24px;
+      font-size: 0.75rem;
+      color: #555;
+    }
+    #status.connected { color: #4c4; }
+    #status.error     { color: #c44; }
+  </style>
+</head>
+<body>
+  <h1>SPEEDUINO DASH</h1>
+
+  <div id="gauges">
+    <div class="gauge-wrap">
+      <span class="gauge-label">RPM</span>
+      <canvas id="gaugeRpm"></canvas>
+      <span class="gauge-value" id="valRpm">0</span>
+    </div>
+    <div class="gauge-wrap">
+      <span class="gauge-label">Advance</span>
+      <canvas id="gaugeAdv"></canvas>
+      <span class="gauge-value" id="valAdv">0°</span>
+    </div>
+  </div>
+
+  <div id="status">connecting...</div>
+
+  <script>
+    const gaugeRpm = new RadialGauge({
+      renderTo: 'gaugeRpm',
+      width: 220, height: 220,
+      units: 'RPM',
+      minValue: 0, maxValue: 7000,
+      majorTicks: ['0','1000','2000','3000','4000','5000','6000','7000'],
+      minorTicks: 4,
+      strokeTicks: true,
+      highlights: [{ from: 5500, to: 7000, color: 'rgba(200,0,0,.75)' }],
+      colorPlate: '#1a1a1a',
+      colorMajorTicks: '#ccc',
+      colorMinorTicks: '#555',
+      colorTitle: '#aaa',
+      colorUnits: '#888',
+      colorNumbers: '#ccc',
+      colorNeedle: 'rgba(240,128,0,1)',
+      colorNeedleEnd: 'rgba(200,80,0,.9)',
+      valueBox: false,
+      animationDuration: 80,
+      animationRule: 'linear',
+    }).draw();
+
+    const gaugeAdv = new RadialGauge({
+      renderTo: 'gaugeAdv',
+      width: 220, height: 220,
+      units: 'Degrees',
+      minValue: -10, maxValue: 45,
+      majorTicks: ['-10','0','10','20','30','40','45'],
+      minorTicks: 2,
+      strokeTicks: true,
+      highlights: [{ from: 35, to: 45, color: 'rgba(200,120,0,.6)' }],
+      colorPlate: '#1a1a1a',
+      colorMajorTicks: '#ccc',
+      colorMinorTicks: '#555',
+      colorTitle: '#aaa',
+      colorUnits: '#888',
+      colorNumbers: '#ccc',
+      colorNeedle: 'rgba(0,180,240,1)',
+      colorNeedleEnd: 'rgba(0,120,200,.9)',
+      valueBox: false,
+      animationDuration: 80,
+      animationRule: 'linear',
+    }).draw();
+
+    const status = document.getElementById('status');
+    const valRpm = document.getElementById('valRpm');
+    const valAdv = document.getElementById('valAdv');
+
+    function connect() {
+      const ws = new WebSocket('ws://' + location.host + '/ws');
+
+      ws.onopen = () => {
+        status.textContent = 'connected';
+        status.className = 'connected';
+      };
+
+      ws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        gaugeRpm.value = d.rpm;
+        gaugeAdv.value = d.advance;
+        valRpm.textContent = d.rpm;
+        valAdv.textContent = d.advance + '°';
+      };
+
+      ws.onclose = () => {
+        status.textContent = 'disconnected — retrying...';
+        status.className = 'error';
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        status.textContent = 'connection error';
+        status.className = 'error';
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
