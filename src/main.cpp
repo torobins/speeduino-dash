@@ -24,6 +24,10 @@ const char* WIFI_PASS = "foxglove2017";
 #define OFF_ADVANCE    23    // 1 byte, timing advance
 
 #define POLL_INTERVAL_MS 150
+#define BROADCAST_MS     250   // send to browser at ~4 Hz (gauges can't keep up faster)
+#define POLL_BACKOFF_MS  2000  // slow down when Speeduino isn't responding
+
+bool g_speeduinoOnline = false;
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -274,6 +278,10 @@ bool pollSpeeduino() {
 }
 
 void broadcastData() {
+    static uint32_t lastBcast = 0;
+    if (!ws.count()) return;
+    if (millis() - lastBcast < BROADCAST_MS) return;
+    lastBcast = millis();
     char buf[96];
     snprintf(buf, sizeof(buf),
         "{\"rpm\":%d,\"adv\":%d,\"map\":%d,\"tps\":%d,\"batt\":%d}",
@@ -322,10 +330,12 @@ void setup() {
 
 void loop() {
     static uint32_t lastPoll = 0;
-    if (millis() - lastPoll >= POLL_INTERVAL_MS) {
+    uint32_t interval = g_speeduinoOnline ? POLL_INTERVAL_MS : POLL_BACKOFF_MS;
+    if (millis() - lastPoll >= interval) {
         lastPoll = millis();
-        pollSpeeduino();
-        broadcastData();
+        g_speeduinoOnline = pollSpeeduino();
+        if (g_speeduinoOnline) broadcastData();
         ws.cleanupClients();
     }
+    yield();
 }
