@@ -8,8 +8,8 @@ const char* WIFI_PASS = "foxglove2017";
 
 #define SPEEDY_SERIAL Serial2
 #define SPEEDY_BAUD   115200
-#define SPEEDY_RX     27   // A2 pad on QT Py ESP32 Pico — receives from Speeduino
-#define SPEEDY_TX     32   // unused TX pad
+#define SPEEDY_RX     16   // GPIO16 (RX2) on ESP32 DevKit
+#define SPEEDY_TX     17   // GPIO17 (TX2) on ESP32 DevKit
 
 // Realtime data offsets (from Speeduino wiki)
 #define OFF_MAP         4    // 2 bytes, MAP kPa
@@ -86,9 +86,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
       <span class="gauge-value" id="valRpm">0</span>
     </div>
     <div class="gauge-wrap large">
-      <span class="gauge-label">Advance</span>
-      <canvas id="gaugeAdv"></canvas>
-      <span class="gauge-value" id="valAdv">0&deg;</span>
+      <span class="gauge-label">TPS</span>
+      <canvas id="gaugeTps"></canvas>
+      <span class="gauge-value" id="valTps">0%</span>
     </div>
   </div>
 
@@ -99,9 +99,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
       <span class="gauge-value" id="valMap">0 kPa</span>
     </div>
     <div class="gauge-wrap small">
-      <span class="gauge-label">TPS</span>
-      <canvas id="gaugeTps"></canvas>
-      <span class="gauge-value" id="valTps">0%</span>
+      <span class="gauge-label">Advance</span>
+      <canvas id="gaugeAdv"></canvas>
+      <span class="gauge-value" id="valAdv">0&deg;</span>
     </div>
     <div id="batt-wrap">
       <span id="batt-label">Battery</span>
@@ -129,7 +129,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     })).draw();
 
     const gaugeAdv = new RadialGauge(Object.assign({}, BASE, {
-      renderTo:'gaugeAdv', width:220, height:220, units:'Degrees',
+      renderTo:'gaugeAdv', width:160, height:160, units:'Degrees',
       minValue:-10, maxValue:45,
       majorTicks:['-10','0','10','20','30','40','45'],
       minorTicks:2,
@@ -147,7 +147,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     })).draw();
 
     const gaugeTps = new RadialGauge(Object.assign({}, BASE, {
-      renderTo:'gaugeTps', width:160, height:160, units:'%',
+      renderTo:'gaugeTps', width:220, height:220, units:'%',
       minValue:0, maxValue:100,
       majorTicks:['0','25','50','75','100'],
       minorTicks:4,
